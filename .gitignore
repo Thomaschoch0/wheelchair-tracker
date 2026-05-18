@@ -141,3 +141,66 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+
+# =========================
+# PlatformIO / ESP32
+# =========================
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Keep PlatformIO config files
+!platformio.ini
+
+# ESP32 secrets
+**/wifi_credentials.h
+**/secrets.h
+**/config_private.h
+
+
+# =========================
+# Firebase / API Secrets
+# =========================
+serviceAccountKey.json
+firebase-adminsdk*.json
+*.pem
+*.key
+*.crt
+
+
+# =========================
+# Python Backend
+# =========================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env/
+
+
+# =========================
+# VSCode / Cursor
+# =========================
+.vscode/
+.cursor/
+
+
+# =========================
+# Windows / OS Files
+# =========================
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+
+# =========================
+# Hardware / CAD Build Outputs
+# =========================
+*.bak
+*.tmp
+*.kicad_prl
+*-backups/
