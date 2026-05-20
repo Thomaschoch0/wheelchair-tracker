@@ -111,6 +111,37 @@ export const logIn = mutation({
   },
 });
 
+export const resetPassword = mutation({
+  args: {
+    email: v.string(),
+    passwordHash: v.string(),
+    sessionToken: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const email = normalizeEmail(args.email);
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", email))
+      .unique();
+
+    if (!user) {
+      throw new Error("No account exists for that email.");
+    }
+
+    await ctx.db.patch(user._id, {
+      passwordHash: args.passwordHash,
+    });
+
+    await ctx.db.insert("sessions", {
+      userId: user._id,
+      token: args.sessionToken,
+      createdAt: Date.now(),
+    });
+
+    return { user: publicUser(user), sessionToken: args.sessionToken };
+  },
+});
+
 export const getCurrentUser = query({
   args: {
     sessionToken: v.string(),

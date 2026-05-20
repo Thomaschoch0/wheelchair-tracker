@@ -4,7 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 
-type AuthMode = "login" | "signup";
+type AuthMode = "login" | "signup" | "reset";
 type AppView = "dashboard" | "progress" | "alerts" | "customize";
 type TrendRange = "day" | "week" | "month" | "year" | "all";
 
@@ -493,6 +493,7 @@ function AuthScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const signUp = useMutation(api.users.signUp);
   const logIn = useMutation(api.users.logIn);
+  const resetPassword = useMutation(api.users.resetPassword);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -511,6 +512,12 @@ function AuthScreen({
 
         await signUp({
           name,
+          email: trimmedEmail,
+          passwordHash,
+          sessionToken,
+        });
+      } else if (mode === "reset") {
+        await resetPassword({
           email: trimmedEmail,
           passwordHash,
           sessionToken,
@@ -540,19 +547,28 @@ function AuthScreen({
             Wheel Watchers
           </div>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
-            {mode === "signup" ? "Create your account" : "Log in to continue"}
+            {mode === "signup"
+              ? "Create your account"
+              : mode === "reset"
+                ? "Reset your password"
+                : "Log in to continue"}
           </h1>
           <p className="mt-2 text-sm leading-6 text-zinc-600">
             {mode === "signup"
               ? "Sign up to create your private wheelchair dashboard."
-              : "Enter your email and password to open your wheelchair data."}
+              : mode === "reset"
+                ? "Enter your email and choose a new password."
+                : "Enter your email and password to open your wheelchair data."}
           </p>
         </div>
 
         <div className="mt-6 grid grid-cols-2 gap-2 rounded-2xl bg-blue-50 p-1">
           <button
             type="button"
-            onClick={() => setMode("login")}
+            onClick={() => {
+              setError("");
+              setMode("login");
+            }}
             className={[
               "rounded-md px-3 py-2 text-sm font-semibold transition",
               mode === "login"
@@ -564,7 +580,10 @@ function AuthScreen({
           </button>
           <button
             type="button"
-            onClick={() => setMode("signup")}
+            onClick={() => {
+              setError("");
+              setMode("signup");
+            }}
             className={[
               "rounded-md px-3 py-2 text-sm font-semibold transition",
               mode === "signup"
@@ -654,6 +673,18 @@ function AuthScreen({
                 )}
               </button>
             </div>
+            {mode === "login" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setMode("reset");
+                }}
+                className="mt-2 text-sm font-semibold text-blue-600 transition hover:text-blue-700"
+              >
+                Forgot password?
+              </button>
+            ) : null}
           </label>
 
           {error ? (
@@ -671,8 +702,23 @@ function AuthScreen({
               ? "Please wait..."
               : mode === "signup"
                 ? "Create account"
+                : mode === "reset"
+                  ? "Reset password"
                 : "Enter"}
           </button>
+
+          {mode === "reset" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setError("");
+                setMode("login");
+              }}
+              className="w-full text-sm font-semibold text-zinc-500 transition hover:text-zinc-900"
+            >
+              Back to login
+            </button>
+          ) : null}
         </form>
       </section>
     </main>

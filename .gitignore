@@ -204,3 +204,4 @@ $RECYCLE.BIN/
 *.tmp
 *.kicad_prl
 *-backups/
+.vercel
