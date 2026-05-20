@@ -1,65 +1,19 @@
-type TimeframeKey = "today" | "week" | "year";
+"use client";
 
-type DashboardTimeframe = {
-  label: string;
-  progressScore: number; // 0..100
-  avgImbalancePct: number; // 0..100
-  totalAlerts: number;
-  pushes: {
-    leftAvgN: number;
-    rightAvgN: number;
-  };
-};
+import { FormEvent, useMemo, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
-type Insight = {
-  title: string;
-  detail: string;
-  tag: "Good" | "Watch" | "Action";
-};
+type AuthMode = "login" | "signup";
+type AppView = "dashboard" | "progress" | "alerts" | "customize";
+type TrendRange = "day" | "week" | "month" | "year" | "all";
 
-const sampleData: Record<TimeframeKey, DashboardTimeframe> = {
-  today: {
-    label: "Today",
-    progressScore: 78,
-    avgImbalancePct: 6.4,
-    totalAlerts: 3,
-    pushes: { leftAvgN: 142, rightAvgN: 132 },
-  },
-  week: {
-    label: "Week",
-    progressScore: 83,
-    avgImbalancePct: 5.1,
-    totalAlerts: 9,
-    pushes: { leftAvgN: 138, rightAvgN: 135 },
-  },
-  year: {
-    label: "Year",
-    progressScore: 74,
-    avgImbalancePct: 7.9,
-    totalAlerts: 142,
-    pushes: { leftAvgN: 145, rightAvgN: 129 },
-  },
-};
-
-const sampleInsights: Insight[] = [
-  {
-    title: "Smoother symmetry this week",
-    detail:
-      "Average left/right imbalance improved by 1.3% compared to last week.",
-    tag: "Good",
-  },
-  {
-    title: "Most alerts after long pushes",
-    detail:
-      "Imbalance alerts cluster after 12+ minutes of continuous propulsion.",
-    tag: "Watch",
-  },
-  {
-    title: "Try a cadence reset",
-    detail:
-      "A 30–60 second cadence check-in every 10 minutes may reduce drift to the right.",
-    tag: "Action",
-  },
+const trendRanges: Array<{ key: TrendRange; label: string }> = [
+  { key: "day", label: "Day" },
+  { key: "week", label: "Week" },
+  { key: "month", label: "Month" },
+  { key: "year", label: "Year" },
+  { key: "all", label: "All" },
 ];
 
 function clamp01(n: number) {
@@ -81,51 +35,22 @@ function scoreToLabel(score: number) {
   return "Needs attention";
 }
 
-function scoreToColor(score: number) {
-  if (score >= 85) return "bg-emerald-500";
-  if (score >= 70) return "bg-sky-500";
-  if (score >= 55) return "bg-amber-500";
-  return "bg-rose-500";
-}
-
-function tagStyles(tag: Insight["tag"]) {
-  switch (tag) {
-    case "Good":
-      return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
-    case "Watch":
-      return "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
-    case "Action":
-      return "bg-sky-50 text-sky-700 ring-1 ring-sky-200";
-    default:
-      return "bg-zinc-50 text-zinc-700 ring-1 ring-zinc-200";
-  }
-}
-
-function Tile({
-  title,
-  children,
-  className = "",
-}: {
-  title: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section
-      className={[
-        "rounded-3xl bg-white/80 ring-1 ring-zinc-200/60 shadow-sm backdrop-blur",
-        "p-5 sm:p-6",
-        className,
-      ].join(" ")}
-    >
-      <header className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold tracking-tight text-zinc-900">
-          {title}
-        </h2>
-      </header>
-      <div className="mt-4">{children}</div>
-    </section>
+function makeSessionToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
   );
+}
+
+async function hashPassword(email: string, password: string) {
+  const data = new TextEncoder().encode(
+    `${email.trim().toLowerCase()}:${password}`,
+  );
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function Stat({
@@ -148,425 +73,976 @@ function Stat({
   );
 }
 
-function ForceBar({
-  label,
-  value,
-  max,
-  tint,
+function TrendChart({
+  points,
 }: {
-  label: string;
-  value: number;
-  max: number;
-  tint: "left" | "right";
+  points: Array<{ label: string; score: number; timestamp: number }>;
 }) {
-  const pct = clamp01(value / max);
-  const barClass =
-    tint === "left" ? "from-sky-500 to-cyan-400" : "from-indigo-500 to-violet-400";
+  const width = 900;
+  const height = 360;
+  const padX = 28;
+  const padY = 30;
+  const chartWidth = width - padX * 2;
+  const chartHeight = height - padY * 2;
+  const visiblePoints =
+    points.length > 1
+      ? points
+      : points.length === 1
+        ? [
+            { ...points[0], timestamp: points[0].timestamp - 1 },
+            points[0],
+          ]
+        : [];
+  const coords = visiblePoints.map((point, index) => {
+    const x =
+      padX +
+      (visiblePoints.length === 1
+        ? chartWidth
+        : (index / Math.max(1, visiblePoints.length - 1)) * chartWidth);
+    const y = padY + (1 - clamp01(point.score / 100)) * chartHeight;
+
+    return { ...point, x, y };
+  });
+  const areaPath =
+    coords.length > 0
+      ? [
+          `M ${coords[0].x} ${height - padY}`,
+          ...coords.map((point) => `L ${point.x} ${point.y}`),
+          `L ${coords[coords.length - 1].x} ${height - padY}`,
+          "Z",
+        ].join(" ")
+      : "";
+
+  if (coords.length === 0) {
+    return (
+      <div className="grid aspect-[16/7] min-h-72 place-items-center rounded-lg bg-zinc-50 text-sm text-zinc-500 ring-1 ring-zinc-200/70">
+        No progress readings yet
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="text-sm font-medium text-zinc-800">{label}</div>
-        <div className="text-sm font-semibold text-zinc-900">
-          {formatNumber(value)} <span className="text-xs text-zinc-500">N</span>
-        </div>
-      </div>
-      <div className="h-3 w-full rounded-full bg-zinc-100 ring-1 ring-zinc-200/60 overflow-hidden">
-        <div
-          className={`h-full rounded-full bg-gradient-to-r ${barClass}`}
-          style={{ width: `${Math.round(pct * 100)}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ScoreRing({ score }: { score: number }) {
-  const r = 42;
-  const stroke = 10;
-  const c = 2 * Math.PI * r;
-  const p = clamp01(score / 100);
-  const dash = c * p;
-
-  return (
-    <div className="relative grid place-items-center">
+    <div className="rounded-lg bg-zinc-950 p-4 text-white shadow-sm">
       <svg
-        width={120}
-        height={120}
-        viewBox="0 0 120 120"
-        className="block"
-        aria-label={`Progress score ${score}`}
+        viewBox={`0 0 ${width} ${height}`}
+        className="block aspect-[16/7] w-full"
+        role="img"
+        aria-label="Progress score trend graph"
       >
         <defs>
-          <linearGradient id="scoreGradient" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#0ea5e9" />
-            <stop offset="100%" stopColor="#22c55e" />
+          <linearGradient id="trendArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(34,197,94,0.28)" />
+            <stop offset="100%" stopColor="rgba(34,197,94,0.02)" />
           </linearGradient>
         </defs>
-        <circle
-          cx="60"
-          cy="60"
-          r={r}
-          fill="none"
-          stroke="rgba(228, 228, 231, 0.9)"
-          strokeWidth={stroke}
-        />
-        <circle
-          cx="60"
-          cy="60"
-          r={r}
-          fill="none"
-          stroke="url(#scoreGradient)"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={`${dash} ${c - dash}`}
-          transform="rotate(-90 60 60)"
-        />
-      </svg>
-      <div className="absolute flex flex-col items-center">
-        <div className="text-3xl font-semibold tracking-tight text-zinc-900">
-          {score}
-        </div>
-        <div className="text-xs font-medium text-zinc-500">/ 100</div>
-      </div>
-    </div>
-  );
-}
+        {[25, 50, 75].map((line) => {
+          const y = padY + (1 - line / 100) * chartHeight;
 
-function TimeframeCard({
-  active,
-  label,
-  progressScore,
-  avgImbalancePct,
-  totalAlerts,
-}: {
-  active: boolean;
-  label: string;
-  progressScore: number;
-  avgImbalancePct: number;
-  totalAlerts: number;
-}) {
-  return (
-    <div
-      className={[
-        "rounded-3xl p-5 sm:p-6 ring-1 shadow-sm",
-        active
-          ? "bg-white ring-zinc-200/70"
-          : "bg-white/70 ring-zinc-200/50 hover:bg-white/80",
-      ].join(" ")}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold tracking-tight text-zinc-900">
-            {label}
-          </div>
-          <div className="mt-1 text-xs text-zinc-500">Summary</div>
-        </div>
-        <div
-          className={[
-            "inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold",
-            "bg-zinc-50 text-zinc-700 ring-1 ring-zinc-200/70",
-          ].join(" ")}
-        >
-          {scoreToLabel(progressScore)}
-        </div>
-      </div>
+          return (
+            <g key={line}>
+              <line
+                x1={padX}
+                x2={width - padX}
+                y1={y}
+                y2={y}
+                stroke="rgba(255,255,255,0.09)"
+              />
+              <text
+                x={padX}
+                y={y - 8}
+                fill="rgba(255,255,255,0.45)"
+                fontSize="12"
+              >
+                {line}
+              </text>
+            </g>
+          );
+        })}
+        <path d={areaPath} fill="url(#trendArea)" />
+        {coords.slice(1).map((point, index) => {
+          const previous = coords[index];
+          const isGood = point.score >= previous.score || point.score >= 70;
 
-      <div className="mt-5 grid grid-cols-3 gap-4">
-        <Stat label="Score" value={`${progressScore}`} sub="0–100" />
-        <Stat label="Avg imbalance" value={formatPct(avgImbalancePct)} />
-        <Stat label="Alerts" value={formatNumber(totalAlerts)} />
-      </div>
-
-      <div className="mt-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-medium text-zinc-500">
-            Progress score
-          </div>
-          <div className="text-xs font-semibold text-zinc-700">
-            {progressScore}%
-          </div>
-        </div>
-        <div className="mt-2 h-2.5 w-full rounded-full bg-zinc-100 ring-1 ring-zinc-200/60 overflow-hidden">
-          <div
-            className={`h-full rounded-full ${scoreToColor(progressScore)}`}
-            style={{ width: `${Math.round(clamp01(progressScore / 100) * 100)}%` }}
+          return (
+            <line
+              key={`${point.timestamp}-${index}`}
+              x1={previous.x}
+              y1={previous.y}
+              x2={point.x}
+              y2={point.y}
+              stroke={isGood ? "#22c55e" : "#ef4444"}
+              strokeWidth="5"
+              strokeLinecap="round"
+            />
+          );
+        })}
+        {coords.map((point, index) => (
+          <circle
+            key={`${point.timestamp}-${index}`}
+            cx={point.x}
+            cy={point.y}
+            r="5"
+            fill={point.score >= 70 ? "#22c55e" : "#ef4444"}
+            stroke="#18181b"
+            strokeWidth="3"
           />
-        </div>
-      </div>
+        ))}
+        {coords
+          .filter((_, index) => {
+            if (coords.length <= 6) return true;
+            return index === 0 || index === coords.length - 1 || index % 3 === 0;
+          })
+          .map((point, index) => (
+            <text
+              key={`${point.timestamp}-label-${index}`}
+              x={point.x}
+              y={height - 8}
+              textAnchor="middle"
+              fill="rgba(255,255,255,0.52)"
+              fontSize="12"
+            >
+              {point.label}
+            </text>
+          ))}
+      </svg>
     </div>
   );
 }
 
-export default function Home() {
-  const selected: TimeframeKey = "today";
-  const tf = sampleData[selected];
-
-  const maxForce = Math.max(tf.pushes.leftAvgN, tf.pushes.rightAvgN) * 1.15;
-  const total = tf.pushes.leftAvgN + tf.pushes.rightAvgN;
-  const splitLeft = total === 0 ? 0.5 : tf.pushes.leftAvgN / total;
-  const splitRight = 1 - splitLeft;
+function ProgressDetailScreen({
+  wheelchairName,
+  summary,
+  points,
+  selectedRange,
+  onRangeChange,
+  onBack,
+}: {
+  wheelchairName: string;
+  summary: {
+    progressScore: number;
+    avgImbalancePct: number;
+    totalAlerts: number;
+  };
+  points: Array<{ label: string; score: number; timestamp: number }>;
+  selectedRange: TrendRange;
+  onRangeChange: (range: TrendRange) => void;
+  onBack: () => void;
+}) {
+  const firstScore = points[0]?.score ?? summary.progressScore;
+  const latestScore = points[points.length - 1]?.score ?? summary.progressScore;
+  const scoreChange = latestScore - firstScore;
 
   return (
-    <div className="min-h-dvh bg-gradient-to-b from-zinc-50 via-zinc-50 to-white text-zinc-900">
+    <div className="health-backdrop-soft min-h-dvh text-zinc-900">
       <div className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm ring-1 ring-blue-100 backdrop-blur transition hover:bg-white"
+        >
+          Back
+        </button>
+
+        <header className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 ring-1 ring-zinc-200/60">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              Live sample data
+            <div className="text-sm font-semibold text-blue-600">
+              {wheelchairName}
             </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-950 sm:text-4xl">
-              Wheel Watchers Dashboard
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950 sm:text-4xl">
+              Progress score
             </h1>
             <p className="mt-2 text-sm text-zinc-600">
-              Propulsion symmetry and force trends. Last sync:{" "}
-              <span className="font-medium text-zinc-800">2 min ago</span>
+              Score movement over time, with green for stronger days and red for
+              weaker days.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="rounded-2xl bg-white/70 px-4 py-3 text-xs text-zinc-600 ring-1 ring-zinc-200/60">
-              <div className="font-semibold text-zinc-900">Device</div>
-              <div className="mt-0.5">WheelSense v2 • Indoor</div>
+          <div className="rounded-3xl bg-white/90 px-5 py-4 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+            <div className="text-xs font-medium text-zinc-500">Current</div>
+            <div className="mt-1 text-4xl font-semibold tracking-tight text-zinc-950">
+              {summary.progressScore}
             </div>
-            <div className="rounded-2xl bg-white/70 px-4 py-3 text-xs text-zinc-600 ring-1 ring-zinc-200/60">
-              <div className="font-semibold text-zinc-900">Session</div>
-              <div className="mt-0.5">Propulsion tracking</div>
+            <div
+              className={[
+                "mt-1 text-sm font-semibold",
+                scoreChange >= 0 ? "text-emerald-600" : "text-rose-600",
+              ].join(" ")}
+            >
+              {scoreChange >= 0 ? "+" : ""}
+              {scoreChange} this range
             </div>
           </div>
         </header>
 
-        <main className="mt-8 space-y-6">
+        <main className="mt-8 space-y-5">
+          <div className="flex flex-wrap gap-2">
+            {trendRanges.map((range) => (
+              <button
+                key={range.key}
+                type="button"
+                onClick={() => onRangeChange(range.key)}
+                className={[
+                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  selectedRange === range.key
+                    ? "bg-blue-600 text-white"
+                    : "bg-white/90 text-zinc-700 ring-1 ring-blue-100 hover:bg-white",
+                ].join(" ")}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+
+          <TrendChart points={points} />
+
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {(["today", "week", "year"] as const).map((k) => {
-              const d = sampleData[k];
-              return (
-                <TimeframeCard
-                  key={k}
-                  active={k === selected}
-                  label={d.label}
-                  progressScore={d.progressScore}
-                  avgImbalancePct={d.avgImbalancePct}
-                  totalAlerts={d.totalAlerts}
-                />
-              );
-            })}
-          </section>
-
-          <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            <Tile title="Progress score" className="lg:col-span-4">
-              <div className="flex items-center justify-between gap-6">
-                <ScoreRing score={tf.progressScore} />
-                <div className="flex-1">
-                  <div className="text-sm font-semibold text-zinc-900">
-                    {scoreToLabel(tf.progressScore)}
-                  </div>
-                  <p className="mt-1 text-sm text-zinc-600">
-                    Based on symmetry, alert rate, and force stability.
-                  </p>
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl bg-zinc-50 px-3 py-2 ring-1 ring-zinc-200/60">
-                      <div className="text-xs font-medium text-zinc-500">
-                        Avg imbalance
-                      </div>
-                      <div className="mt-1 text-sm font-semibold text-zinc-900">
-                        {formatPct(tf.avgImbalancePct)}
-                      </div>
-                    </div>
-                    <div className="rounded-2xl bg-zinc-50 px-3 py-2 ring-1 ring-zinc-200/60">
-                      <div className="text-xs font-medium text-zinc-500">
-                        Alerts
-                      </div>
-                      <div className="mt-1 text-sm font-semibold text-zinc-900">
-                        {formatNumber(tf.totalAlerts)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </Tile>
-
-            <Tile title="Average imbalance" className="lg:col-span-4">
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <div className="text-4xl font-semibold tracking-tight text-zinc-950">
-                    {formatPct(tf.avgImbalancePct)}
-                  </div>
-                  <div className="mt-1 text-sm text-zinc-600">
-                    Mean absolute left/right force difference.
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-zinc-50 px-3 py-2 ring-1 ring-zinc-200/60">
-                  <div className="text-xs font-medium text-zinc-500">
-                    Target range
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-zinc-900">
-                    ≤ 6.0%
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5">
-                <div className="flex items-center justify-between text-xs text-zinc-500">
-                  <span>0%</span>
-                  <span>10%</span>
-                  <span>20%</span>
-                </div>
-                <div className="mt-2 h-3 w-full rounded-full bg-zinc-100 ring-1 ring-zinc-200/60 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-sky-500 to-rose-500"
-                    style={{
-                      width: `${Math.round(
-                        clamp01(tf.avgImbalancePct / 20) * 100,
-                      )}%`,
-                    }}
-                  />
-                </div>
-                <div className="mt-2 text-xs text-zinc-500">
-                  Lower is better; sustained spikes often correlate with fatigue.
-                </div>
-              </div>
-            </Tile>
-
-            <Tile title="Total imbalance alerts" className="lg:col-span-4">
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <div className="text-4xl font-semibold tracking-tight text-zinc-950">
-                    {formatNumber(tf.totalAlerts)}
-                  </div>
-                  <div className="mt-1 text-sm text-zinc-600">
-                    Events where imbalance exceeded threshold.
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-zinc-50 px-3 py-2 ring-1 ring-zinc-200/60">
-                  <div className="text-xs font-medium text-zinc-500">
-                    Threshold
-                  </div>
-                  <div className="mt-1 text-sm font-semibold text-zinc-900">
-                    ≥ 12%
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 grid grid-cols-3 gap-3">
-                {[
-                  { label: "Morning", value: Math.max(0, Math.floor(tf.totalAlerts * 0.28)) },
-                  { label: "Midday", value: Math.max(0, Math.floor(tf.totalAlerts * 0.44)) },
-                  { label: "Evening", value: Math.max(0, tf.totalAlerts - Math.floor(tf.totalAlerts * 0.28) - Math.floor(tf.totalAlerts * 0.44)) },
-                ].map((x) => (
-                  <div
-                    key={x.label}
-                    className="rounded-2xl bg-zinc-50 px-3 py-3 ring-1 ring-zinc-200/60"
-                  >
-                    <div className="text-xs font-medium text-zinc-500">
-                      {x.label}
-                    </div>
-                    <div className="mt-1 text-lg font-semibold text-zinc-900">
-                      {formatNumber(x.value)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Tile>
-          </section>
-
-          <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            <Tile title="Left vs right push force" className="lg:col-span-7">
-              <div className="grid grid-cols-1 gap-5">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <ForceBar
-                    label="Left average"
-                    value={tf.pushes.leftAvgN}
-                    max={maxForce}
-                    tint="left"
-                  />
-                  <ForceBar
-                    label="Right average"
-                    value={tf.pushes.rightAvgN}
-                    max={maxForce}
-                    tint="right"
-                  />
-                </div>
-
-                <div className="rounded-3xl bg-zinc-50 p-4 ring-1 ring-zinc-200/60">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-zinc-900">
-                      Force split
-                    </div>
-                    <div className="text-xs text-zinc-600">
-                      Left {Math.round(splitLeft * 100)}% • Right{" "}
-                      {Math.round(splitRight * 100)}%
-                    </div>
-                  </div>
-                  <div className="mt-3 h-3 w-full rounded-full bg-white ring-1 ring-zinc-200/60 overflow-hidden">
-                    <div className="flex h-full w-full">
-                      <div
-                        className="h-full bg-gradient-to-r from-sky-500 to-cyan-400"
-                        style={{ width: `${Math.round(splitLeft * 100)}%` }}
-                      />
-                      <div
-                        className="h-full bg-gradient-to-r from-indigo-500 to-violet-400"
-                        style={{ width: `${Math.round(splitRight * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-2 text-xs text-zinc-500">
-                    Tip: persistent splits ≥ 55/45 may increase shoulder load over time.
-                  </div>
-                </div>
-              </div>
-            </Tile>
-
-            <Tile title="Insights" className="lg:col-span-5">
-              <div className="space-y-3">
-                {sampleInsights.map((insight) => (
-                  <div
-                    key={insight.title}
-                    className="rounded-3xl bg-zinc-50 p-4 ring-1 ring-zinc-200/60"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="text-sm font-semibold text-zinc-900">
-                        {insight.title}
-                      </div>
-                      <div
-                        className={[
-                          "shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold",
-                          tagStyles(insight.tag),
-                        ].join(" ")}
-                      >
-                        {insight.tag}
-                      </div>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-zinc-600">
-                      {insight.detail}
-                    </p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 rounded-3xl bg-white/70 p-4 ring-1 ring-zinc-200/60">
-                <div className="text-xs font-medium text-zinc-500">
-                  Coming next
-                </div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900">
-                  Trend charts & alert drill-down
-                </div>
-                <div className="mt-2 text-sm text-zinc-600">
-                  Hook this up to your sensor stream when ready.
-                </div>
-              </div>
-            </Tile>
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Current score"
+                value={`${summary.progressScore}`}
+                sub={scoreToLabel(summary.progressScore)}
+              />
+            </div>
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Average imbalance"
+                value={formatPct(summary.avgImbalancePct)}
+                sub="Lower is better"
+              />
+            </div>
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Alerts"
+                value={formatNumber(summary.totalAlerts)}
+                sub="Higher imbalance readings"
+              />
+            </div>
           </section>
         </main>
+      </div>
+    </div>
+  );
+}
 
-        <footer className="mt-10 flex flex-col gap-2 border-t border-zinc-200/60 pt-6 text-xs text-zinc-500 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            Displaying:{" "}
-            <span className="font-medium text-zinc-700">{tf.label}</span> • Fake
-            sample data
+function AlertsScreen({
+  wheelchairName,
+  alerts,
+  onBack,
+}: {
+  wheelchairName: string;
+  alerts: Array<{
+    id: string;
+    timestamp: number;
+    label: string;
+    imbalancePct: number;
+    leftForceRaw?: number;
+    rightForceRaw?: number;
+  }>;
+  onBack: () => void;
+}) {
+  return (
+    <div className="health-backdrop-soft min-h-dvh text-zinc-900">
+      <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm ring-1 ring-blue-100 backdrop-blur transition hover:bg-white"
+        >
+          Back
+        </button>
+
+        <header className="mt-8">
+          <div className="text-sm font-semibold text-rose-600">
+            {wheelchairName}
           </div>
-          <div>Wheel Watchers • Health-tech dashboard prototype</div>
-        </footer>
+          <h1 className="mt-2 text-4xl font-semibold tracking-tight text-zinc-950">
+            Alerts
+          </h1>
+          <p className="mt-2 text-sm text-zinc-500">
+            Times when left and right push force moved outside the healthy range.
+          </p>
+        </header>
+
+        <main className="mt-8">
+          {alerts.length === 0 ? (
+            <section className="rounded-3xl bg-white/90 p-8 text-center shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <div className="text-2xl font-semibold tracking-tight">
+                No alerts yet
+              </div>
+              <p className="mt-2 text-sm text-zinc-500">
+                Alert events will appear here once sensor readings cross the
+                threshold.
+              </p>
+            </section>
+          ) : (
+            <div className="overflow-hidden rounded-3xl bg-white/90 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              {alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className="flex flex-col gap-3 border-b border-zinc-100 p-5 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div className="text-sm font-semibold text-zinc-950">
+                      {alert.label}
+                    </div>
+                    <div className="mt-1 text-sm text-zinc-500">
+                      Left {formatNumber(alert.leftForceRaw ?? 0)} N - Right{" "}
+                      {formatNumber(alert.rightForceRaw ?? 0)} N
+                    </div>
+                  </div>
+                  <div className="inline-flex w-fit items-center rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700 ring-1 ring-rose-100">
+                    {formatPct(alert.imbalancePct)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function CustomizeWheelchairScreen({
+  currentName,
+  deviceId,
+  error,
+  isSaving,
+  onSave,
+  onBack,
+}: {
+  currentName: string;
+  deviceId: string;
+  error: string;
+  isSaving: boolean;
+  onSave: (name: string) => Promise<void>;
+  onBack: () => void;
+}) {
+  const [name, setName] = useState(currentName);
+
+  return (
+    <div className="health-backdrop-soft min-h-dvh text-zinc-900">
+      <div className="mx-auto w-full max-w-xl px-4 py-8 sm:px-6">
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm ring-1 ring-blue-100 backdrop-blur transition hover:bg-white"
+        >
+          Back
+        </button>
+
+        <section className="mt-8 rounded-3xl bg-white/90 p-6 shadow-sm ring-1 ring-blue-100 backdrop-blur sm:p-8">
+          <div className="mx-auto grid h-24 w-24 place-items-center rounded-full bg-blue-600 text-4xl font-semibold text-white">
+            {name.trim().slice(0, 1).toUpperCase() || "W"}
+          </div>
+          <h1 className="mt-6 text-center text-3xl font-semibold tracking-tight text-zinc-950">
+            Customize wheelchair
+          </h1>
+          <p className="mt-2 text-center text-sm text-zinc-500">
+            Device {deviceId}
+          </p>
+
+          <form
+            className="mt-8 space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSave(name);
+            }}
+          >
+            <label className="block">
+              <span className="text-sm font-medium text-zinc-700">Name</span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                className="mt-2 w-full rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-base outline-none transition focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100"
+                placeholder="My wheelchair"
+                required
+              />
+            </label>
+
+            {error ? (
+              <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 ring-1 ring-rose-100">
+                {error}
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
+            >
+              {isSaving ? "Saving..." : "Save"}
+            </button>
+          </form>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({
+  onAuthenticated,
+}: {
+  onAuthenticated: (sessionToken: string) => void;
+}) {
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const signUp = useMutation(api.users.signUp);
+  const logIn = useMutation(api.users.logIn);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setIsSubmitting(true);
+
+    try {
+      const trimmedEmail = email.trim().toLowerCase();
+      const passwordHash = await hashPassword(trimmedEmail, password);
+      const sessionToken = makeSessionToken();
+
+      if (mode === "signup") {
+        if (!name.trim()) {
+          throw new Error("Please enter your name.");
+        }
+
+        await signUp({
+          name,
+          email: trimmedEmail,
+          passwordHash,
+          sessionToken,
+        });
+      } else {
+        await logIn({
+          email: trimmedEmail,
+          passwordHash,
+          sessionToken,
+        });
+      }
+
+      localStorage.setItem("wheel-watchers-session", sessionToken);
+      onAuthenticated(sessionToken);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="health-backdrop grid min-h-dvh place-items-center px-4 py-10 text-zinc-900">
+      <section className="w-full max-w-md rounded-3xl bg-white/90 p-6 shadow-sm ring-1 ring-blue-100 backdrop-blur sm:p-8">
+        <div>
+          <div className="text-sm font-semibold text-blue-600">
+            Wheel Watchers
+          </div>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950">
+            {mode === "signup" ? "Create your account" : "Log in to continue"}
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">
+            {mode === "signup"
+              ? "Sign up to create your private wheelchair dashboard."
+              : "Enter your email and password to open your wheelchair data."}
+          </p>
+        </div>
+
+        <div className="mt-6 grid grid-cols-2 gap-2 rounded-2xl bg-blue-50 p-1">
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            className={[
+              "rounded-md px-3 py-2 text-sm font-semibold transition",
+              mode === "login"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-600 hover:text-zinc-950",
+            ].join(" ")}
+          >
+            Log in
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            className={[
+              "rounded-md px-3 py-2 text-sm font-semibold transition",
+              mode === "signup"
+                ? "bg-white text-zinc-950 shadow-sm"
+                : "text-zinc-600 hover:text-zinc-950",
+            ].join(" ")}
+          >
+            Sign up
+          </button>
+        </div>
+
+        <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          {mode === "signup" ? (
+            <label className="block">
+              <span className="text-sm font-medium text-zinc-700">Name</span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
+                placeholder="Your name"
+                required
+              />
+            </label>
+          ) : null}
+
+          <label className="block">
+            <span className="text-sm font-medium text-zinc-700">Email</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
+              placeholder="you@example.com"
+              required
+            />
+          </label>
+
+          <label className="block">
+            <span className="text-sm font-medium text-zinc-700">Password</span>
+            <div className="relative mt-1">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-11 text-sm outline-none transition focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
+                placeholder="Create a secure password"
+                minLength={6}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((current) => !current)}
+                className="absolute inset-y-0 right-0 grid w-11 place-items-center text-zinc-500 transition hover:text-zinc-900"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? (
+                  <svg
+                    aria-hidden="true"
+                    className="h-5 w-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20c-5 0-9.27-3.11-11-8a11.6 11.6 0 0 1 3.17-4.68" />
+                    <path d="M9.9 4.24A10.7 10.7 0 0 1 12 4c5 0 9.27 3.11 11 8a11.8 11.8 0 0 1-2.19 3.45" />
+                    <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                    <path d="M3 3l18 18" />
+                  </svg>
+                ) : (
+                  <svg
+                    aria-hidden="true"
+                    className="h-5 w-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </label>
+
+          {error ? (
+            <div className="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 ring-1 ring-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
+          >
+            {isSubmitting
+              ? "Please wait..."
+              : mode === "signup"
+                ? "Create account"
+                : "Enter"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+export default function Home() {
+  const [sessionToken, setSessionToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    return localStorage.getItem("wheel-watchers-session");
+  });
+  const [selectedWheelchairId, setSelectedWheelchairId] = useState<
+    string | null
+  >(null);
+  const [view, setView] = useState<AppView>("dashboard");
+  const [trendRange, setTrendRange] = useState<TrendRange>("week");
+  const [isWheelchairMenuOpen, setIsWheelchairMenuOpen] = useState(false);
+  const [wheelchairError, setWheelchairError] = useState("");
+  const [isSavingWheelchair, setIsSavingWheelchair] = useState(false);
+  const dashboard = useQuery(
+    api.dashboard.getDashboard,
+    sessionToken ? { sessionToken } : "skip",
+  );
+  const logOut = useMutation(api.users.logOut);
+  const updateWheelchair = useMutation(api.dashboard.updateWheelchair);
+
+  const selectedWheelchair = useMemo(() => {
+    const selected = dashboard?.wheelchairs.find(
+      (wheelchair) => wheelchair.id === selectedWheelchairId,
+    );
+
+    return selected ?? dashboard?.wheelchairs[0];
+  }, [dashboard, selectedWheelchairId]);
+
+  async function handleLogOut() {
+    if (sessionToken) {
+      await logOut({ sessionToken });
+    }
+
+    localStorage.removeItem("wheel-watchers-session");
+    setSessionToken(null);
+    setSelectedWheelchairId(null);
+    setView("dashboard");
+  }
+
+  async function handleWheelchairSave(name: string) {
+    if (!sessionToken || !selectedWheelchair) {
+      return;
+    }
+
+    setWheelchairError("");
+    setIsSavingWheelchair(true);
+
+    try {
+      await updateWheelchair({
+        sessionToken,
+        wheelchairId: selectedWheelchair.id,
+        name,
+      });
+      setView("dashboard");
+    } catch (err) {
+      setWheelchairError(
+        err instanceof Error ? err.message : "Could not save wheelchair.",
+      );
+    } finally {
+      setIsSavingWheelchair(false);
+    }
+  }
+
+  if (!sessionToken) {
+    return <AuthScreen onAuthenticated={setSessionToken} />;
+  }
+
+  if (dashboard === undefined) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-zinc-50 text-sm font-medium text-zinc-600">
+        Loading your dashboard...
+      </main>
+    );
+  }
+
+  if (dashboard === null) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-zinc-50 px-4 text-zinc-900">
+        <section className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-sm ring-1 ring-zinc-200">
+          <h1 className="text-xl font-semibold tracking-tight">
+            Please log in again
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">
+            Your saved session is no longer valid.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.removeItem("wheel-watchers-session");
+              setSessionToken(null);
+            }}
+            className="mt-5 rounded-md bg-zinc-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-zinc-800"
+          >
+            Back to login
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  const summary = selectedWheelchair?.summary ?? {
+    progressScore: 0,
+    avgImbalancePct: 0,
+    totalAlerts: 0,
+    pushes: { leftAvgN: 0, rightAvgN: 0 },
+    latestTimestamp: null,
+  };
+  const trendPoints = selectedWheelchair?.trends?.[trendRange] ?? [];
+  const alerts = selectedWheelchair?.alerts ?? [];
+
+  if (view === "progress") {
+    return (
+      <ProgressDetailScreen
+        wheelchairName={selectedWheelchair?.name ?? "Wheelchair"}
+        summary={summary}
+        points={trendPoints}
+        selectedRange={trendRange}
+        onRangeChange={setTrendRange}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "alerts") {
+    return (
+      <AlertsScreen
+        wheelchairName={selectedWheelchair?.name ?? "Wheelchair"}
+        alerts={alerts}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "customize") {
+    return (
+      <CustomizeWheelchairScreen
+        currentName={selectedWheelchair?.name ?? "My wheelchair"}
+        deviceId={selectedWheelchair?.deviceId ?? "wheelchair_001"}
+        error={wheelchairError}
+        isSaving={isSavingWheelchair}
+        onSave={handleWheelchairSave}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  return (
+    <div className="health-backdrop min-h-dvh text-zinc-900">
+      <div className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col px-5 py-8 sm:px-6">
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-blue-600">
+              Wheel Watchers
+            </div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950 sm:text-4xl">
+              {selectedWheelchair?.name ?? "My wheelchair"}
+            </h1>
+            <p className="mt-2 text-sm text-zinc-500">
+              {summary.latestTimestamp
+                ? `Last sync ${new Date(summary.latestTimestamp).toLocaleString()}`
+                : "Waiting for sensor data"}
+            </p>
+          </div>
+
+          <div className="relative flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsWheelchairMenuOpen((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/90 px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm outline-none backdrop-blur transition hover:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+              aria-expanded={isWheelchairMenuOpen}
+              aria-haspopup="menu"
+            >
+              {selectedWheelchair?.name ?? "My wheelchair"}
+              <svg
+                aria-hidden="true"
+                className={[
+                  "h-4 w-4 text-zinc-500 transition",
+                  isWheelchairMenuOpen ? "rotate-180" : "",
+                ].join(" ")}
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+
+            {isWheelchairMenuOpen ? (
+              <div
+                className="absolute right-20 top-12 z-10 w-72 overflow-hidden rounded-3xl bg-white/95 p-2 shadow-xl ring-1 ring-blue-100 backdrop-blur"
+                role="menu"
+              >
+                {dashboard.wheelchairs.map((wheelchair) => (
+                  <div
+                    key={wheelchair.id}
+                    className="group flex items-center justify-between gap-3 rounded-2xl px-3 py-2 transition hover:bg-zinc-50"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedWheelchairId(wheelchair.id);
+                        setIsWheelchairMenuOpen(false);
+                      }}
+                      className="min-w-0 flex-1 text-left"
+                      role="menuitem"
+                    >
+                      <div className="truncate text-sm font-semibold text-zinc-900">
+                        {wheelchair.name}
+                      </div>
+                      <div className="truncate text-xs text-zinc-500">
+                        {wheelchair.deviceId}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedWheelchairId(wheelchair.id);
+                        setWheelchairError("");
+                        setIsWheelchairMenuOpen(false);
+                        setView("customize");
+                      }}
+                      className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white opacity-0 transition hover:bg-blue-700 group-hover:opacity-100 group-focus-within:opacity-100"
+                    >
+                      Rename
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={handleLogOut}
+              className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+            >
+              Log out
+            </button>
+          </div>
+        </header>
+
+        <main className="mx-auto mt-10 grid w-full max-w-[620px] grid-cols-2 gap-x-6 gap-y-10 pb-10 sm:gap-x-12 sm:gap-y-12">
+          <button
+            type="button"
+            onClick={() => setView("progress")}
+            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
+          >
+            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
+              <div className="grid place-items-center">
+                <div className="text-6xl font-semibold tracking-tight text-blue-600 sm:text-7xl">
+                  {summary.progressScore}
+                </div>
+                <div className="mt-1 text-sm font-bold uppercase tracking-wide text-zinc-500">
+                  Score
+                </div>
+                <div className="mt-3 text-sm font-semibold text-zinc-500">
+                  {formatPct(summary.avgImbalancePct)} symmetry
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
+                Health
+              </div>
+              <div className="mt-1 text-sm font-semibold text-blue-600">
+                {scoreToLabel(summary.progressScore)}
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setView("alerts")}
+            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
+          >
+            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
+              <div className="grid place-items-center">
+                <div className="text-6xl font-semibold tracking-tight text-rose-500 sm:text-7xl">
+                  {formatNumber(summary.totalAlerts)}
+                </div>
+                <div className="mt-1 text-sm font-bold uppercase tracking-wide text-zinc-500">
+                  Alerts
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
+                Alerts
+              </div>
+              <div className="mt-1 text-sm font-semibold text-rose-500">
+                View times
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setView("progress")}
+            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
+          >
+            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
+              <div className="grid place-items-center">
+                <div className="grid place-items-center">
+                  <div className="grid h-20 w-20 place-items-center rounded-full bg-amber-50 text-amber-500">
+                    <svg
+                      aria-hidden="true"
+                      className="h-11 w-11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M9 18h6" />
+                      <path d="M10 22h4" />
+                      <path d="M12 2a7 7 0 0 0-4 12.74V16h8v-1.26A7 7 0 0 0 12 2z" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
+                Insights
+              </div>
+              <div className="mt-1 text-sm font-semibold text-zinc-500">
+                Guidance
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setView("progress")}
+            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
+          >
+            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
+              <div className="grid w-full place-items-center px-8">
+                <div className="mb-4 flex w-full items-end justify-center gap-3">
+                  <div className="h-16 w-8 rounded-full bg-blue-500" />
+                  <div className="h-12 w-8 rounded-full bg-indigo-500" />
+                </div>
+                <div className="text-sm font-bold uppercase tracking-wide text-zinc-500">
+                  Force
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
+                Push Force
+              </div>
+              <div className="mt-1 text-sm font-semibold text-zinc-500">
+                L {formatNumber(summary.pushes.leftAvgN)} / R{" "}
+                {formatNumber(summary.pushes.rightAvgN)}
+              </div>
+            </div>
+          </button>
+        </main>
       </div>
     </div>
   );

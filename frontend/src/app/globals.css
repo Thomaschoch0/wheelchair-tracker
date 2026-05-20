@@ -24,3 +24,39 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.health-backdrop {
+  background:
+    radial-gradient(circle at 84% 13%, rgba(255, 255, 255, 0.46) 0 12%, transparent 29%),
+    radial-gradient(circle at 8% 92%, rgba(37, 99, 235, 0.08) 0 11%, transparent 25%),
+    radial-gradient(circle at 90% 79%, rgba(59, 130, 246, 0.12) 0 8%, transparent 22%),
+    linear-gradient(180deg, #dff4ff 0%, #eaf8ff 38%, #f8fcff 100%);
+}
+
+.health-backdrop-soft {
+  background:
+    radial-gradient(circle at 82% 10%, rgba(255, 255, 255, 0.5) 0 12%, transparent 28%),
+    radial-gradient(circle at 13% 92%, rgba(37, 99, 235, 0.07) 0 10%, transparent 24%),
+    linear-gradient(180deg, #dff4ff 0%, #eef9ff 44%, #fbfdff 100%);
+}
+
+.streaks-tile {
+  box-shadow:
+    0 22px 45px rgba(37, 99, 235, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.streaks-press {
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+
+.streaks-press:hover {
+  transform: translateY(-4px) scale(1.015);
+}
+
+.streaks-press:active {
+  transform: translateY(1px) scale(0.975);
+}
