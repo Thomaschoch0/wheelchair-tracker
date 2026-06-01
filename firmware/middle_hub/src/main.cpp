@@ -1,108 +1,111 @@
 #include <Arduino.h>
-#include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
 
-#define IMU_ADDR 0x68
+// Must stay byte-for-byte compatible with the left and right hub senders.
+typedef struct __attribute__((packed)) {
+  char side;
+  uint32_t timestampMs;
 
-// ---------- WRITE REGISTER ----------
-void writeRegister(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(IMU_ADDR);
-  Wire.write(reg);
-  Wire.write(value);
-  Wire.endTransmission();
+  uint16_t fsrA0;
+  uint16_t fsrA1;
+
+  float accelX_g;
+  float accelY_g;
+  float accelZ_g;
+
+  float gyroX_dps;
+  float gyroY_dps;
+  float gyroZ_dps;
+
+  float accelMag_g;
+} HubPacket;
+
+void printMacAddress(const uint8_t *macAddress) {
+  for (int i = 0; i < 6; i++) {
+    if (i > 0) {
+      Serial.print(":");
+    }
+
+    if (macAddress[i] < 0x10) {
+      Serial.print("0");
+    }
+
+    Serial.print(macAddress[i], HEX);
+  }
 }
 
-// ---------- READ 16-BIT VALUE ----------
-int16_t read16(uint8_t reg) {
-
-  Wire.beginTransmission(IMU_ADDR);
-  Wire.write(reg);
-
-  if (Wire.endTransmission(false) != 0) {
-    return 0;
+void onDataReceived(const uint8_t *macAddress, const uint8_t *incomingData, int length) {
+  if (length != sizeof(HubPacket)) {
+    Serial.print("Ignored ESP-NOW packet with unexpected size: ");
+    Serial.print(length);
+    Serial.print(" bytes (expected ");
+    Serial.print(sizeof(HubPacket));
+    Serial.println(")");
+    return;
   }
 
-  if (Wire.requestFrom(IMU_ADDR, 2) != 2) {
-    return 0;
-  }
+  HubPacket packet;
+  memcpy(&packet, incomingData, sizeof(packet));
 
-  int16_t high = Wire.read();
-  int16_t low = Wire.read();
+  Serial.println("--------------------------------");
+  Serial.print("Received from ");
+  printMacAddress(macAddress);
+  Serial.print(" | Hub: ");
+  Serial.println(packet.side);
 
-  return (high << 8) | low;
+  Serial.print("Sender timestamp (ms): ");
+  Serial.println(packet.timestampMs);
+
+  Serial.print("FSR A0: ");
+  Serial.print(packet.fsrA0);
+  Serial.print(" | FSR A1: ");
+  Serial.println(packet.fsrA1);
+
+  Serial.print("ACCEL corrected (g) X: ");
+  Serial.print(packet.accelX_g, 3);
+  Serial.print(" Y: ");
+  Serial.print(packet.accelY_g, 3);
+  Serial.print(" Z: ");
+  Serial.print(packet.accelZ_g, 3);
+  Serial.print(" | Mag: ");
+  Serial.println(packet.accelMag_g, 3);
+
+  Serial.print("GYRO corrected (deg/s) X: ");
+  Serial.print(packet.gyroX_dps, 2);
+  Serial.print(" Y: ");
+  Serial.print(packet.gyroY_dps, 2);
+  Serial.print(" Z: ");
+  Serial.println(packet.gyroZ_dps, 2);
 }
 
 void setup() {
-
   Serial.begin(115200);
+  delay(1500);
 
-  delay(2000);
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("MIDDLE HUB STARTING");
+  Serial.println("ESP-NOW LEFT/RIGHT HUB RECEIVER");
+  Serial.println("================================");
 
-  Serial.println("Starting MPU6050...");
-
-  // Use Feather SDA/SCL pins
-  Wire.begin(SDA, SCL);
-
-  Wire.setTimeOut(100000);
-
+  WiFi.mode(WIFI_STA);
   delay(100);
 
-  // Wake MPU6050
-  writeRegister(0x6B, 0x00);
+  Serial.print("Middle hub MAC address: ");
+  Serial.println(WiFi.macAddress());
 
-  delay(100);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    while (true) {
+      delay(1000);
+    }
+  }
 
-  // Set accel range = ±2g
-  writeRegister(0x1C, 0x00);
-
-  // Set gyro range = ±250 deg/sec
-  writeRegister(0x1B, 0x00);
-
-  Serial.println("MPU6050 READY");
+  esp_now_register_recv_cb(onDataReceived);
+  Serial.println("ESP-NOW receiver ready.");
 }
 
 void loop() {
-
-  // ---------- ACCEL ----------
-  int16_t ax = read16(0x3B);
-  int16_t ay = read16(0x3D);
-  int16_t az = read16(0x3F);
-
-  // ---------- GYRO ----------
-  int16_t gx = read16(0x43);
-  int16_t gy = read16(0x45);
-  int16_t gz = read16(0x47);
-
-  // ---------- CONVERT ----------
-  float ax_g = ax / 16384.0;
-  float ay_g = ay / 16384.0;
-  float az_g = az / 16384.0;
-
-  float gx_dps = gx / 131.0;
-  float gy_dps = gy / 131.0;
-  float gz_dps = gz / 131.0;
-
-  // ---------- PRINT ----------
-  Serial.println("--------------------------------");
-
-  Serial.print("ACCEL (g)");
-  Serial.print("  X: ");
-  Serial.print(ax_g, 3);
-
-  Serial.print("  Y: ");
-  Serial.print(ay_g, 3);
-
-  Serial.print("  Z: ");
-  Serial.println(az_g, 3);
-
-  Serial.print("GYRO (deg/s)");
-  Serial.print("  X: ");
-  Serial.print(gx_dps, 2);
-
-  Serial.print("  Y: ");
-  Serial.print(gy_dps, 2);
-
-  Serial.print("  Z: ");
-  Serial.println(gz_dps, 2);
-
-  delay(200);
+  delay(1000);
 }
