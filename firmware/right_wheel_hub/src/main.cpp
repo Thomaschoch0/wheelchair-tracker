@@ -4,10 +4,10 @@
 #include <esp_now.h>
 
 // =======================
-// LEFT HUB CONFIG
+// RIGHT HUB CONFIG
 // =======================
 
-#define HUB_SIDE 'L'
+#define HUB_SIDE 'R'
 
 // Force sensor pins
 #define FSR_PIN_A0 A0
@@ -16,8 +16,7 @@
 // MPU6050 I2C address
 #define MPU_ADDR 0x68
 
-// For Adafruit ESP32-S3 Feather, labeled SDA/SCL usually work with Wire.begin()
-// If your IMU only works with specific pins, use Wire.begin(SDA_PIN, SCL_PIN)
+// For Adafruit ESP32-S3 Feather
 #define SDA_PIN SDA
 #define SCL_PIN SCL
 
@@ -170,8 +169,8 @@ void getMotionCorrected(
 void calibrateMPU6050() {
   Serial.println();
   Serial.println("================================");
-  Serial.println("LEFT HUB IMU CALIBRATION");
-  Serial.println("Keep the left wheel completely still.");
+  Serial.println("RIGHT HUB IMU CALIBRATION");
+  Serial.println("Keep the right wheel completely still.");
   Serial.println("Do not touch the wires or wheel.");
   Serial.println("================================");
 
@@ -226,7 +225,7 @@ void calibrateMPU6050() {
   float avgGz = sumGz / validSamples;
 
   /*
-    Your current resting orientation shows:
+    Your current resting orientation showed:
     ACCEL X ≈ 0
     ACCEL Y ≈ 0
     ACCEL Z ≈ +1.09g
@@ -235,6 +234,10 @@ void calibrateMPU6050() {
     X = 0g
     Y = 0g
     Z = +1g
+
+    If the right hub is mounted in a different orientation,
+    this still calibrates gyro correctly, but accel resting axis
+    may need to be adjusted later.
   */
   accelX_offset = avgAx;
   accelY_offset = avgAy;
@@ -283,7 +286,7 @@ void setupEspNow() {
   WiFi.mode(WIFI_STA);
   delay(100);
 
-  Serial.print("Left hub MAC address: ");
+  Serial.print("Right hub MAC address: ");
   Serial.println(WiFi.macAddress());
 
   if (esp_now_init() != ESP_OK) {
@@ -321,7 +324,7 @@ void setup() {
 
   Serial.println();
   Serial.println("================================");
-  Serial.println("LEFT WHEEL HUB STARTING");
+  Serial.println("RIGHT WHEEL HUB STARTING");
   Serial.println("2 FSR + MPU6050 + ESP-NOW SEND");
   Serial.println("================================");
 
@@ -359,7 +362,7 @@ void setup() {
 
   setupEspNow();
 
-  Serial.println("Left hub running...");
+  Serial.println("Right hub running...");
 }
 
 

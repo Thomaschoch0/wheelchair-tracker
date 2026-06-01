@@ -1,12 +1,23 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 
 type AuthMode = "login" | "signup" | "reset";
-type AppView = "dashboard" | "progress" | "alerts" | "customize";
+type AppView = "dashboard" | "progress" | "insights" | "customize" | "training";
 type TrendRange = "day" | "week" | "month" | "year" | "all";
+type TrainingReading = {
+  id: string;
+  timestamp: number;
+  leftForceRaw: number;
+  rightForceRaw: number;
+  totalForceRaw: number;
+};
+type TrainingPause = {
+  start: number;
+  end: number | null;
+};
 
 const trendRanges: Array<{ key: TrendRange; label: string }> = [
   { key: "day", label: "Day" },
@@ -28,11 +39,100 @@ function formatNumber(n: number) {
   return Intl.NumberFormat(undefined).format(n);
 }
 
+function formatDecimal(n: number, digits = 1) {
+  return n.toFixed(digits);
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function scoreToLabel(score: number) {
   if (score >= 85) return "Excellent";
   if (score >= 70) return "Good";
   if (score >= 55) return "Fair";
   return "Needs attention";
+}
+
+function buildInsightFeedback(summary: {
+  progressScore: number;
+  avgImbalancePct: number;
+  totalAlerts: number;
+  pushes: { leftAvgN: number; rightAvgN: number };
+}) {
+  const forceTotal =
+    Math.abs(summary.pushes.leftAvgN) + Math.abs(summary.pushes.rightAvgN);
+  const forceDifferencePct =
+    forceTotal === 0
+      ? 0
+      : (Math.abs(summary.pushes.leftAvgN - summary.pushes.rightAvgN) /
+          forceTotal) *
+        100;
+  const strongerSide =
+    summary.pushes.leftAvgN > summary.pushes.rightAvgN ? "left" : "right";
+  const feedback = [];
+
+  if (summary.progressScore >= 85) {
+    feedback.push({
+      title: "Strong propulsion pattern",
+      tone: "emerald",
+      body: "Your overall score is in a strong range. Keep the same rhythm and watch for fatigue late in longer sessions.",
+    });
+  } else if (summary.progressScore >= 70) {
+    feedback.push({
+      title: "Good baseline",
+      tone: "blue",
+      body: "Your pushes are generally consistent. The biggest improvement will come from smoothing out uneven force spikes.",
+    });
+  } else {
+    feedback.push({
+      title: "Needs steadier pushes",
+      tone: "rose",
+      body: "Your recent readings show enough imbalance to affect efficiency. Try shorter, smoother pushes with both hands starting together.",
+    });
+  }
+
+  if (summary.avgImbalancePct >= 12) {
+    feedback.push({
+      title: "Balance the left and right push",
+      tone: "amber",
+      body: `Average imbalance is ${formatPct(summary.avgImbalancePct)}. Focus on matching hand timing before increasing force.`,
+    });
+  } else {
+    feedback.push({
+      title: "Symmetry looks controlled",
+      tone: "emerald",
+      body: `Average imbalance is ${formatPct(summary.avgImbalancePct)}, which suggests your force is staying fairly even.`,
+    });
+  }
+
+  if (forceDifferencePct >= 10) {
+    feedback.push({
+      title: `${strongerSide[0].toUpperCase()}${strongerSide.slice(1)} side is working harder`,
+      tone: "amber",
+      body: `Your average push force differs by ${formatPct(forceDifferencePct)}. Reduce effort on the ${strongerSide} side or cue the other hand earlier.`,
+    });
+  } else {
+    feedback.push({
+      title: "Push force is well matched",
+      tone: "blue",
+      body: "Left and right force averages are close. Keep this consistency during starts, stops, and turns.",
+    });
+  }
+
+  if (summary.totalAlerts > 0) {
+    feedback.push({
+      title: "Review high-imbalance moments",
+      tone: "rose",
+      body: `${formatNumber(summary.totalAlerts)} recent readings crossed the imbalance threshold. These are useful moments to compare against turns, ramps, or fatigue.`,
+    });
+  }
+
+  return feedback;
 }
 
 function makeSessionToken() {
@@ -209,6 +309,416 @@ function TrendChart({
   );
 }
 
+function SessionLineChart({
+  title,
+  points,
+  color,
+  valueLabel,
+}: {
+  title: string;
+  points: Array<{ timestamp: number; value: number }>;
+  color: string;
+  valueLabel: string;
+}) {
+  const width = 760;
+  const height = 220;
+  const padX = 28;
+  const padY = 24;
+  const chartWidth = width - padX * 2;
+  const chartHeight = height - padY * 2;
+  const maxValue = Math.max(1, ...points.map((point) => point.value));
+  const minTime = points[0]?.timestamp ?? 0;
+  const maxTime = points[points.length - 1]?.timestamp ?? minTime + 1;
+  const timeSpan = Math.max(1, maxTime - minTime);
+  const coords = points.map((point) => ({
+    x: padX + ((point.timestamp - minTime) / timeSpan) * chartWidth,
+    y: padY + (1 - point.value / maxValue) * chartHeight,
+    value: point.value,
+  }));
+  const path = coords
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+
+  return (
+    <section className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="text-sm font-semibold text-zinc-950">{title}</h2>
+        <div className="text-xs font-medium text-zinc-500">{valueLabel}</div>
+      </div>
+      {coords.length < 2 ? (
+        <div className="mt-4 grid aspect-[16/6] min-h-40 place-items-center rounded-2xl bg-zinc-50 text-sm text-zinc-500 ring-1 ring-zinc-100">
+          Start a session to collect graph data
+        </div>
+      ) : (
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="mt-4 block aspect-[16/6] w-full"
+          role="img"
+          aria-label={`${title} graph`}
+        >
+          {[0.25, 0.5, 0.75].map((line) => {
+            const y = padY + line * chartHeight;
+
+            return (
+              <line
+                key={line}
+                x1={padX}
+                x2={width - padX}
+                y1={y}
+                y2={y}
+                stroke="#e4e4e7"
+                strokeWidth="1"
+              />
+            );
+          })}
+          <path
+            d={path}
+            fill="none"
+            stroke={color}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="5"
+          />
+          {coords.map((point, index) =>
+            index % Math.max(1, Math.floor(coords.length / 8)) === 0 ? (
+              <circle
+                key={`${point.x}-${index}`}
+                cx={point.x}
+                cy={point.y}
+                r="4"
+                fill={color}
+                stroke="white"
+                strokeWidth="2"
+              />
+            ) : null,
+          )}
+        </svg>
+      )}
+    </section>
+  );
+}
+
+function TrainingMetric({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+      <div className="text-xs font-medium text-zinc-500">{label}</div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">
+        {value}
+      </div>
+      <div className="mt-1 text-xs text-zinc-500">{sub}</div>
+    </div>
+  );
+}
+
+function deriveTrainingMetrics(readings: TrainingReading[]) {
+  const complete = readings.filter((reading) => reading.totalForceRaw > 0);
+  const forcePoints = readings.map((reading) => ({
+    timestamp: reading.timestamp,
+    value: reading.totalForceRaw,
+  }));
+  const balancePoints = readings.map((reading) => {
+    const total = Math.abs(reading.leftForceRaw) + Math.abs(reading.rightForceRaw);
+    const imbalance = total === 0 ? 0 : (Math.abs(reading.leftForceRaw - reading.rightForceRaw) / total) * 100;
+
+    return {
+      timestamp: reading.timestamp,
+      value: imbalance,
+    };
+  });
+  const forceChanges = readings.slice(1).map((reading, index) => {
+    const previous = readings[index];
+    const seconds = Math.max(0.25, (reading.timestamp - previous.timestamp) / 1000);
+
+    return {
+      timestamp: reading.timestamp,
+      value: (reading.totalForceRaw - previous.totalForceRaw) / seconds,
+    };
+  });
+  const accelerationPoints = forceChanges.map((point) => ({
+    timestamp: point.timestamp,
+    value: Math.max(0, point.value),
+  }));
+  const decelerationPoints = forceChanges.map((point) => ({
+    timestamp: point.timestamp,
+    value: Math.max(0, -point.value),
+  }));
+  const totalForces = complete.map((reading) => reading.totalForceRaw);
+  const averageForce = Math.round(averageClient(totalForces));
+  const peakForce = Math.round(Math.max(0, ...totalForces));
+  const pushThreshold = Math.max(18, peakForce * 0.28);
+  const pushes = complete.reduce((count, reading, index) => {
+    const previous = complete[index - 1]?.totalForceRaw ?? 0;
+
+    return previous < pushThreshold && reading.totalForceRaw >= pushThreshold
+      ? count + 1
+      : count;
+  }, 0);
+  const startForce = Math.round(
+    averageClient(complete.slice(0, Math.max(1, Math.ceil(complete.length * 0.2))).map((reading) => reading.totalForceRaw)),
+  );
+  const stopForce = Math.round(
+    averageClient(complete.slice(-Math.max(1, Math.ceil(complete.length * 0.2))).map((reading) => reading.totalForceRaw)),
+  );
+  const peakStartRate = Math.round(Math.max(0, ...accelerationPoints.map((point) => point.value)));
+  const peakStopRate = Math.round(Math.max(0, ...decelerationPoints.map((point) => point.value)));
+  const maxTurnImbalance = Math.round(Math.max(0, ...balancePoints.map((point) => point.value)));
+  const turnExitScore = Math.max(0, Math.min(100, Math.round(100 - maxTurnImbalance * 1.7)));
+
+  return {
+    forcePoints,
+    balancePoints,
+    accelerationPoints,
+    decelerationPoints,
+    averageForce,
+    peakForce,
+    pushes,
+    startForce,
+    stopForce,
+    peakStartRate,
+    peakStopRate,
+    maxTurnImbalance,
+    turnExitScore,
+  };
+}
+
+function averageClient(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function TrainingSessionScreen({
+  wheelchairName,
+  readings,
+  startedAt,
+  stoppedAt,
+  pausedAt,
+  pauses,
+  onStart,
+  onPause,
+  onResume,
+  onStop,
+  onBack,
+}: {
+  wheelchairName: string;
+  readings: TrainingReading[];
+  startedAt: number | null;
+  stoppedAt: number | null;
+  pausedAt: number | null;
+  pauses: TrainingPause[];
+  onStart: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onStop: () => void;
+  onBack: () => void;
+}) {
+  const [now, setNow] = useState(0);
+  const isActive =
+    startedAt !== null && stoppedAt === null && pausedAt === null;
+  const isPaused =
+    startedAt !== null && stoppedAt === null && pausedAt !== null;
+
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+
+    return () => window.clearInterval(id);
+  }, [isActive]);
+
+  const windowEnd = stoppedAt ?? pausedAt ?? Math.max(now, startedAt ?? 0);
+  const pausedMs = pauses.reduce((total, pause) => {
+    const pauseEnd = pause.end ?? windowEnd;
+
+    return total + Math.max(0, pauseEnd - pause.start);
+  }, 0);
+  const sessionReadings =
+    startedAt === null
+      ? readings.slice(-80)
+      : readings.filter(
+          (reading) => {
+            const isInSession =
+              reading.timestamp >= startedAt && reading.timestamp <= windowEnd;
+            const isDuringPause = pauses.some((pause) => {
+              const pauseEnd = pause.end ?? windowEnd;
+
+              return reading.timestamp >= pause.start && reading.timestamp <= pauseEnd;
+            });
+
+            return isInSession && !isDuringPause;
+          },
+        );
+  const metrics = deriveTrainingMetrics(sessionReadings);
+  const elapsedMs =
+    startedAt === null ? 0 : Math.max(0, windowEnd - startedAt - pausedMs);
+
+  return (
+    <div className="health-backdrop-soft min-h-dvh text-zinc-900">
+      <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm ring-1 ring-blue-100 backdrop-blur transition hover:bg-white"
+          >
+            Back
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onStart}
+              className="rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700"
+            >
+              {startedAt === null || stoppedAt !== null ? "Start" : "Restart"}
+            </button>
+            {isPaused ? (
+              <button
+                type="button"
+                onClick={onResume}
+                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+              >
+                Resume
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onPause}
+                disabled={!isActive}
+                className="rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-zinc-800 shadow-sm ring-1 ring-blue-100 backdrop-blur transition hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
+              >
+                Pause
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={startedAt === null || stoppedAt !== null}
+              className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+
+        <header className="mt-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-rose-600">
+              {wheelchairName}
+            </div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950 sm:text-4xl">
+              Training session
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-600">
+              Force is measured from the wheel sensors. Start, stop, deceleration, and turn exit are estimated from force changes until acceleration sensors are added.
+            </p>
+          </div>
+          <div className="rounded-3xl bg-white/90 px-5 py-4 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+            <div className="text-xs font-medium text-zinc-500">
+              {isPaused
+                ? "Paused"
+                : isActive
+                  ? "Recording"
+                  : stoppedAt
+                    ? "Stopped"
+                    : "Ready"}
+            </div>
+            <div className="mt-1 text-4xl font-semibold tracking-tight text-zinc-950">
+              {formatDuration(elapsedMs)}
+            </div>
+          </div>
+        </header>
+
+        <main className="mt-8 space-y-5">
+          <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <TrainingMetric
+              label="Pushes"
+              value={formatNumber(metrics.pushes)}
+              sub="Detected force peaks"
+            />
+            <TrainingMetric
+              label="Average force"
+              value={`${formatNumber(metrics.averageForce)} N`}
+              sub={`Peak ${formatNumber(metrics.peakForce)} N`}
+            />
+            <TrainingMetric
+              label="Start speed"
+              value={`${formatNumber(metrics.peakStartRate)} N/s`}
+              sub={`Start force ${formatNumber(metrics.startForce)} N`}
+            />
+            <TrainingMetric
+              label="Stop speed"
+              value={`${formatNumber(metrics.peakStopRate)} N/s`}
+              sub={`Stop force ${formatNumber(metrics.stopForce)} N`}
+            />
+          </section>
+
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <SessionLineChart
+              title="Force while pushing"
+              points={metrics.forcePoints}
+              color="#2563eb"
+              valueLabel={`${formatNumber(metrics.averageForce)} N avg`}
+            />
+            <SessionLineChart
+              title="Start acceleration estimate"
+              points={metrics.accelerationPoints}
+              color="#059669"
+              valueLabel={`${formatNumber(metrics.peakStartRate)} N/s peak`}
+            />
+            <SessionLineChart
+              title="Stopping and deceleration estimate"
+              points={metrics.decelerationPoints}
+              color="#dc2626"
+              valueLabel={`${formatNumber(metrics.peakStopRate)} N/s peak`}
+            />
+            <SessionLineChart
+              title="Turning balance"
+              points={metrics.balancePoints}
+              color="#7c3aed"
+              valueLabel={`${formatNumber(metrics.maxTurnImbalance)}% max`}
+            />
+          </section>
+
+          <section className="rounded-3xl bg-white/90 p-6 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+            <h2 className="text-lg font-semibold tracking-tight text-zinc-950">
+              Session summary
+            </h2>
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <Stat
+                label="Force pushed"
+                value={`${formatNumber(metrics.averageForce)} N`}
+                sub={`${formatNumber(metrics.pushes)} pushes recorded`}
+              />
+              <Stat
+                label="Start and stop"
+                value={`${formatDecimal(metrics.peakStartRate / Math.max(1, metrics.peakStopRate), 2)}x`}
+                sub="Start rate compared with stop rate"
+              />
+              <Stat
+                label="Turn exit"
+                value={`${metrics.turnExitScore}`}
+                sub={`${formatNumber(metrics.maxTurnImbalance)}% max side difference`}
+              />
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 function ProgressDetailScreen({
   wheelchairName,
   summary,
@@ -323,12 +833,19 @@ function ProgressDetailScreen({
   );
 }
 
-function AlertsScreen({
+function InsightsScreen({
   wheelchairName,
+  summary,
   alerts,
   onBack,
 }: {
   wheelchairName: string;
+  summary: {
+    progressScore: number;
+    avgImbalancePct: number;
+    totalAlerts: number;
+    pushes: { leftAvgN: number; rightAvgN: number };
+  };
   alerts: Array<{
     id: string;
     timestamp: number;
@@ -339,9 +856,11 @@ function AlertsScreen({
   }>;
   onBack: () => void;
 }) {
+  const feedback = buildInsightFeedback(summary);
+
   return (
     <div className="health-backdrop-soft min-h-dvh text-zinc-900">
-      <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+      <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
         <button
           type="button"
           onClick={onBack}
@@ -351,31 +870,94 @@ function AlertsScreen({
         </button>
 
         <header className="mt-8">
-          <div className="text-sm font-semibold text-rose-600">
+          <div className="text-sm font-semibold text-amber-600">
             {wheelchairName}
           </div>
           <h1 className="mt-2 text-4xl font-semibold tracking-tight text-zinc-950">
-            Alerts
+            Insights
           </h1>
           <p className="mt-2 text-sm text-zinc-500">
-            Times when left and right push force moved outside the healthy range.
+            Feedback from your recent push force, symmetry, and high-imbalance moments.
           </p>
         </header>
 
-        <main className="mt-8">
-          {alerts.length === 0 ? (
-            <section className="rounded-3xl bg-white/90 p-8 text-center shadow-sm ring-1 ring-blue-100 backdrop-blur">
-              <div className="text-2xl font-semibold tracking-tight">
-                No alerts yet
+        <main className="mt-8 space-y-5">
+          <section className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Current score"
+                value={`${summary.progressScore}`}
+                sub={scoreToLabel(summary.progressScore)}
+              />
+            </div>
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Symmetry"
+                value={formatPct(summary.avgImbalancePct)}
+                sub="Lower imbalance is better"
+              />
+            </div>
+            <div className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+              <Stat
+                label="Force"
+                value={`${formatNumber(summary.pushes.leftAvgN)} / ${formatNumber(summary.pushes.rightAvgN)}`}
+                sub="Left / right average"
+              />
+            </div>
+          </section>
+
+          <section className="grid gap-4 md:grid-cols-2">
+            {feedback.map((item) => (
+              <article
+                key={item.title}
+                className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur"
+              >
+                <div
+                  className={[
+                    "inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1",
+                    item.tone === "emerald"
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                      : item.tone === "rose"
+                        ? "bg-rose-50 text-rose-700 ring-rose-100"
+                        : item.tone === "amber"
+                          ? "bg-amber-50 text-amber-700 ring-amber-100"
+                          : "bg-blue-50 text-blue-700 ring-blue-100",
+                  ].join(" ")}
+                >
+                  Feedback
+                </div>
+                <h2 className="mt-4 text-lg font-semibold tracking-tight text-zinc-950">
+                  {item.title}
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-600">
+                  {item.body}
+                </p>
+              </article>
+            ))}
+          </section>
+
+          <section className="rounded-3xl bg-white/90 p-5 shadow-sm ring-1 ring-blue-100 backdrop-blur">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight text-zinc-950">
+                  High-imbalance moments
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Recent readings that shaped the feedback above.
+                </p>
               </div>
-              <p className="mt-2 text-sm text-zinc-500">
-                Alert events will appear here once sensor readings cross the
-                threshold.
-              </p>
-            </section>
-          ) : (
-            <div className="overflow-hidden rounded-3xl bg-white/90 shadow-sm ring-1 ring-blue-100 backdrop-blur">
-              {alerts.map((alert) => (
+              <div className="text-sm font-semibold text-amber-600">
+                {formatNumber(alerts.length)} shown
+              </div>
+            </div>
+
+            {alerts.length === 0 ? (
+              <div className="mt-5 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 ring-1 ring-emerald-100">
+                No high-imbalance readings in the recent data.
+              </div>
+            ) : (
+              <div className="mt-5 overflow-hidden rounded-2xl ring-1 ring-zinc-100">
+                {alerts.slice(0, 8).map((alert) => (
                 <div
                   key={alert.id}
                   className="flex flex-col gap-3 border-b border-zinc-100 p-5 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
@@ -394,8 +976,9 @@ function AlertsScreen({
                   </div>
                 </div>
               ))}
-            </div>
-          )}
+              </div>
+            )}
+          </section>
         </main>
       </div>
     </div>
@@ -738,6 +1321,14 @@ export default function Home() {
   >(null);
   const [view, setView] = useState<AppView>("dashboard");
   const [trendRange, setTrendRange] = useState<TrendRange>("week");
+  const [trainingStartedAt, setTrainingStartedAt] = useState<number | null>(
+    null,
+  );
+  const [trainingStoppedAt, setTrainingStoppedAt] = useState<number | null>(
+    null,
+  );
+  const [trainingPausedAt, setTrainingPausedAt] = useState<number | null>(null);
+  const [trainingPauses, setTrainingPauses] = useState<TrainingPause[]>([]);
   const [isWheelchairMenuOpen, setIsWheelchairMenuOpen] = useState(false);
   const [wheelchairError, setWheelchairError] = useState("");
   const [isSavingWheelchair, setIsSavingWheelchair] = useState(false);
@@ -791,6 +1382,56 @@ export default function Home() {
     }
   }
 
+  function handleStartTraining() {
+    setTrainingStartedAt(Date.now());
+    setTrainingStoppedAt(null);
+    setTrainingPausedAt(null);
+    setTrainingPauses([]);
+    setView("training");
+  }
+
+  function handlePauseTraining() {
+    if (trainingStartedAt === null || trainingStoppedAt !== null) {
+      return;
+    }
+
+    const pauseStart = Date.now();
+    setTrainingPausedAt(pauseStart);
+    setTrainingPauses((current) => [
+      ...current,
+      { start: pauseStart, end: null },
+    ]);
+  }
+
+  function handleResumeTraining() {
+    if (trainingPausedAt === null) {
+      return;
+    }
+
+    const pauseEnd = Date.now();
+    setTrainingPausedAt(null);
+    setTrainingPauses((current) =>
+      current.map((pause, index) =>
+        index === current.length - 1 && pause.end === null
+          ? { ...pause, end: pauseEnd }
+          : pause,
+      ),
+    );
+  }
+
+  function handleStopTraining() {
+    if (trainingStartedAt !== null) {
+      const stoppedAt = Date.now();
+      setTrainingStoppedAt(stoppedAt);
+      setTrainingPausedAt(null);
+      setTrainingPauses((current) =>
+        current.map((pause) =>
+          pause.end === null ? { ...pause, end: stoppedAt } : pause,
+        ),
+      );
+    }
+  }
+
   if (!sessionToken) {
     return <AuthScreen onAuthenticated={setSessionToken} />;
   }
@@ -837,6 +1478,7 @@ export default function Home() {
   };
   const trendPoints = selectedWheelchair?.trends?.[trendRange] ?? [];
   const alerts = selectedWheelchair?.alerts ?? [];
+  const trainingReadings = selectedWheelchair?.trainingReadings ?? [];
 
   if (view === "progress") {
     return (
@@ -851,11 +1493,30 @@ export default function Home() {
     );
   }
 
-  if (view === "alerts") {
+  if (view === "insights") {
     return (
-      <AlertsScreen
+      <InsightsScreen
         wheelchairName={selectedWheelchair?.name ?? "Wheelchair"}
+        summary={summary}
         alerts={alerts}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "training") {
+    return (
+      <TrainingSessionScreen
+        wheelchairName={selectedWheelchair?.name ?? "Wheelchair"}
+        readings={trainingReadings}
+        startedAt={trainingStartedAt}
+        stoppedAt={trainingStoppedAt}
+        pausedAt={trainingPausedAt}
+        pauses={trainingPauses}
+        onStart={handleStartTraining}
+        onPause={handlePauseTraining}
+        onResume={handleResumeTraining}
+        onStop={handleStopTraining}
         onBack={() => setView("dashboard")}
       />
     );
@@ -1002,53 +1663,29 @@ export default function Home() {
 
           <button
             type="button"
-            onClick={() => setView("alerts")}
+            onClick={() => setView("insights")}
             className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
           >
             <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
               <div className="grid place-items-center">
-                <div className="text-6xl font-semibold tracking-tight text-rose-500 sm:text-7xl">
-                  {formatNumber(summary.totalAlerts)}
+                <div className="grid h-20 w-20 place-items-center rounded-full bg-amber-50 text-amber-500">
+                  <svg
+                    aria-hidden="true"
+                    className="h-11 w-11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M9 18h6" />
+                    <path d="M10 22h4" />
+                    <path d="M12 2a7 7 0 0 0-4 12.74V16h8v-1.26A7 7 0 0 0 12 2z" />
+                  </svg>
                 </div>
-                <div className="mt-1 text-sm font-bold uppercase tracking-wide text-zinc-500">
-                  Alerts
-                </div>
-              </div>
-            </div>
-            <div>
-              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
-                Alerts
-              </div>
-              <div className="mt-1 text-sm font-semibold text-rose-500">
-                View times
-              </div>
-            </div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setView("progress")}
-            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
-          >
-            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
-              <div className="grid place-items-center">
-                <div className="grid place-items-center">
-                  <div className="grid h-20 w-20 place-items-center rounded-full bg-amber-50 text-amber-500">
-                    <svg
-                      aria-hidden="true"
-                      className="h-11 w-11"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M9 18h6" />
-                      <path d="M10 22h4" />
-                      <path d="M12 2a7 7 0 0 0-4 12.74V16h8v-1.26A7 7 0 0 0 12 2z" />
-                    </svg>
-                  </div>
+                <div className="mt-3 text-sm font-bold uppercase tracking-wide text-zinc-500">
+                  Tips
                 </div>
               </div>
             </div>
@@ -1056,8 +1693,44 @@ export default function Home() {
               <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
                 Insights
               </div>
-              <div className="mt-1 text-sm font-semibold text-zinc-500">
-                Guidance
+              <div className="mt-1 text-sm font-semibold text-amber-600">
+                Get feedback
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleStartTraining}
+            className="streaks-press flex flex-col items-center gap-4 text-center focus:outline-none"
+          >
+            <div className="streaks-tile grid aspect-square w-full max-w-[250px] place-items-center rounded-full bg-white/95 ring-8 ring-white/70 backdrop-blur">
+              <div className="grid place-items-center gap-3">
+                <div className="grid h-20 w-20 place-items-center rounded-full bg-rose-50 text-rose-600">
+                  <svg
+                    aria-hidden="true"
+                    className="h-11 w-11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+                <div className="text-sm font-bold uppercase tracking-wide text-zinc-500">
+                  Start
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-base font-black uppercase tracking-tight text-zinc-950 sm:text-lg">
+                Training
+              </div>
+              <div className="mt-1 text-sm font-semibold text-rose-600">
+                New session
               </div>
             </div>
           </button>

@@ -176,6 +176,24 @@ function buildAlerts(readings: Array<{
     .slice(0, 50);
 }
 
+function buildTrainingReadings(readings: Array<{
+  _id: string;
+  leftForceRaw?: number;
+  rightForceRaw?: number;
+  timestamp: number;
+}>) {
+  return readings
+    .slice(0, 240)
+    .map((reading) => ({
+      id: reading._id,
+      timestamp: reading.timestamp,
+      leftForceRaw: reading.leftForceRaw ?? 0,
+      rightForceRaw: reading.rightForceRaw ?? 0,
+      totalForceRaw: (reading.leftForceRaw ?? 0) + (reading.rightForceRaw ?? 0),
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
 export const getDashboard = query({
   args: {
     sessionToken: v.string(),
@@ -214,6 +232,7 @@ export const getDashboard = query({
             all: buildTrend(readings, "all"),
           },
           alerts: buildAlerts(readings),
+          trainingReadings: buildTrainingReadings(readings),
         };
       }),
     );
@@ -224,13 +243,14 @@ export const getDashboard = query({
         name: user.name,
         email: user.email,
       },
-      wheelchairs: readingsByWheelchair.map(({ wheelchair, summary, trends, alerts }) => ({
+      wheelchairs: readingsByWheelchair.map(({ wheelchair, summary, trends, alerts, trainingReadings }) => ({
         id: wheelchair._id,
         name: wheelchair.name,
         deviceId: wheelchair.deviceId,
         summary,
         trends,
         alerts,
+        trainingReadings,
       })),
     };
   },

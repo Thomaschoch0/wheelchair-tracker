@@ -3,6 +3,7 @@
 
 #define IMU_ADDR 0x68
 
+// ---------- WRITE REGISTER ----------
 void writeRegister(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(IMU_ADDR);
   Wire.write(reg);
@@ -10,6 +11,7 @@ void writeRegister(uint8_t reg, uint8_t value) {
   Wire.endTransmission();
 }
 
+// ---------- READ 16-BIT VALUE ----------
 int16_t read16(uint8_t reg) {
 
   Wire.beginTransmission(IMU_ADDR);
@@ -19,7 +21,7 @@ int16_t read16(uint8_t reg) {
     return 0;
   }
 
-  if (Wire.requestFrom((int)IMU_ADDR, 2) != 2) {
+  if (Wire.requestFrom(IMU_ADDR, 2) != 2) {
     return 0;
   }
 
@@ -35,34 +37,42 @@ void setup() {
 
   delay(2000);
 
-  Wire.begin();
+  Serial.println("Starting MPU6050...");
+
+  // Use Feather SDA/SCL pins
+  Wire.begin(SDA, SCL);
+
+  Wire.setTimeOut(100000);
 
   delay(100);
 
-  // wake IMU
+  // Wake MPU6050
   writeRegister(0x6B, 0x00);
 
   delay(100);
 
-  // accel ±2g
+  // Set accel range = ±2g
   writeRegister(0x1C, 0x00);
 
-  // gyro ±250 dps
+  // Set gyro range = ±250 deg/sec
   writeRegister(0x1B, 0x00);
 
-  Serial.println("IMU READ TEST");
+  Serial.println("MPU6050 READY");
 }
 
 void loop() {
 
+  // ---------- ACCEL ----------
   int16_t ax = read16(0x3B);
   int16_t ay = read16(0x3D);
   int16_t az = read16(0x3F);
 
+  // ---------- GYRO ----------
   int16_t gx = read16(0x43);
   int16_t gy = read16(0x45);
   int16_t gz = read16(0x47);
 
+  // ---------- CONVERT ----------
   float ax_g = ax / 16384.0;
   float ay_g = ay / 16384.0;
   float az_g = az / 16384.0;
@@ -71,25 +81,28 @@ void loop() {
   float gy_dps = gy / 131.0;
   float gz_dps = gz / 131.0;
 
-  Serial.println();
+  // ---------- PRINT ----------
+  Serial.println("--------------------------------");
 
-  Serial.print("Accel X: ");
+  Serial.print("ACCEL (g)");
+  Serial.print("  X: ");
   Serial.print(ax_g, 3);
 
-  Serial.print(" Y: ");
+  Serial.print("  Y: ");
   Serial.print(ay_g, 3);
 
-  Serial.print(" Z: ");
+  Serial.print("  Z: ");
   Serial.println(az_g, 3);
 
-  Serial.print("Gyro X: ");
+  Serial.print("GYRO (deg/s)");
+  Serial.print("  X: ");
   Serial.print(gx_dps, 2);
 
-  Serial.print(" Y: ");
+  Serial.print("  Y: ");
   Serial.print(gy_dps, 2);
 
-  Serial.print(" Z: ");
+  Serial.print("  Z: ");
   Serial.println(gz_dps, 2);
 
-  delay(500);
+  delay(200);
 }
